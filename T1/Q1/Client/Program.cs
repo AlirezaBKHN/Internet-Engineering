@@ -5,9 +5,6 @@ using System.Collections.Concurrent;
 
 class UdpFileClient
 {
-    private const int BufferSize = 8192; // Same as server
-    private const int AckTimeout = 3000; // 3 seconds timeout for resending missing packets
-    
     public static async Task StartClient(string serverIp, int serverPort, int threadCount, string saveFilePath, string pathToSave)
     {
         using UdpClient udpClient = new UdpClient();
@@ -24,9 +21,9 @@ class UdpFileClient
 
 
         var initialResult = await udpClient.ReceiveAsync();
-        var intialBuffer = initialResult.Buffer;
-        string sessionId = System.Text.Encoding.ASCII.GetString(intialBuffer.Take(initialResult.Buffer.Length-4).ToArray());
-        int totalPackets = BitConverter.ToInt32(intialBuffer,intialBuffer.Length-4);
+        var initialBuffer = initialResult.Buffer;
+        string sessionId = System.Text.Encoding.ASCII.GetString(initialBuffer.Take(initialResult.Buffer.Length - 4).ToArray());
+        int totalPackets = BitConverter.ToInt32(initialBuffer, initialBuffer.Length - 4);
 
         Console.WriteLine($"Received session ID: {sessionId}");
         Console.WriteLine($"Total packets to be received: {totalPackets}");
@@ -48,21 +45,24 @@ class UdpFileClient
             int threadId = t;
             threads[t] = Task.Run(async () =>
             {
-                
+
                 int startPacket = threadId * packetsPerThread;
                 int endPacket = (threadId == threads.Length - 1) ? totalPackets : startPacket + packetsPerThread;
-
-                for (int i = startPacket; i < endPacket; i++)
+                byte[] packetRequest = new byte[sessionId.Length + 4 + 4]; // sessionID + seq init + seq end
+                System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(packetRequest, 0);
+                BitConverter.GetBytes(startPacket).CopyTo(packetRequest, sessionId.Length);
+                BitConverter.GetBytes(endPacket).CopyTo(packetRequest, sessionId.Length + 4);
+                await clients[t].SendAsync(packetRequest);
+                System.Console.WriteLine($"thread {t} requests packets number {startPacket} to {endPacket}");
+                while (true)
                 {
-                    byte[] packetRequest = new byte[sessionId.Length + 4]; // sessionID + seq num
-                    System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(packetRequest,0);
-                    BitConverter.GetBytes(i).CopyTo(packetRequest,sessionId.Length);
-                    await clients[t].SendAsync(packetRequest);
-                    System.Console.WriteLine($"thread {t} requstes packet number {i}");
+                    var ReceivedPacket = await clients[t].ReceiveAsync();
+                    if (System.Text.Encoding.ASCII.GetString(ReceivedPacket.Buffer) == "FIN")
+                    {
+                        break;
+                    }
 
-                    var res= await clients[t].ReceiveAsync();
-                    receivedPackets[i] = true;
-                    
+
                 }
 
                 //TODO
@@ -96,48 +96,50 @@ class UdpFileClient
         int serverPort = int.Parse(args[1]);
         int threadCount = int.Parse(args[2]);
         string saveFilePath = args[3];
-        string pathToSave = args[4];
+        // System.Console.WriteLine("");
+        var guid = new Guid();
+        string pathToSave = $"../ReceivedFiles/{guid.ToString()}.{saveFilePath.Split('.').Last()}";
         await StartClient(serverIp, serverPort, threadCount, saveFilePath, pathToSave);
     }
 }
 
 
 // for (int sequenceNumber = startPacket; sequenceNumber < endPacket; sequenceNumber++)
-                // {
-                //     bool packetReceived = false;
+// {
+//     bool packetReceived = false;
 
-                //     while (!packetReceived)
-                //     {
-                //         // Request packet by sending the sequence number with session ID
-                //         byte[] packetRequest = new byte[sessionId.Length + 4 +4 ]; // Session ID + sequence number + thread id
-                //         System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(packetRequest, 0); // Add session ID
-                //         BitConverter.GetBytes(sequenceNumber).CopyTo(packetRequest, sessionId.Length); // Add sequence number
-                //         BitConverter.GetBytes(t).CopyTo(packetRequest, sessionId.Length+4); // Add thread id
+//     while (!packetReceived)
+//     {
+//         // Request packet by sending the sequence number with session ID
+//         byte[] packetRequest = new byte[sessionId.Length + 4 +4 ]; // Session ID + sequence number + thread id
+//         System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(packetRequest, 0); // Add session ID
+//         BitConverter.GetBytes(sequenceNumber).CopyTo(packetRequest, sessionId.Length); // Add sequence number
+//         BitConverter.GetBytes(t).CopyTo(packetRequest, sessionId.Length+4); // Add thread id
 
-                //         await udpClient.SendAsync(packetRequest, packetRequest.Length, serverEndpoint);
-                //         Console.WriteLine($"Thread {threadId} requested packet {sequenceNumber}.");
+//         await udpClient.SendAsync(packetRequest, packetRequest.Length, serverEndpoint);
+//         Console.WriteLine($"Thread {threadId} requested packet {sequenceNumber}.");
 
-                //         // Wait to receive the requested packet
-                //         UdpReceiveResult result = await udpClient.ReceiveAsync();
-                //         string receivedSessionId = System.Text.Encoding.ASCII.GetString(result.Buffer, 0, sessionId.Length);
-                //         int receivedSequenceNumber = BitConverter.ToInt32(result.Buffer, sessionId.Length);
+//         // Wait to receive the requested packet
+//         UdpReceiveResult result = await udpClient.ReceiveAsync();
+//         string receivedSessionId = System.Text.Encoding.ASCII.GetString(result.Buffer, 0, sessionId.Length);
+//         int receivedSequenceNumber = BitConverter.ToInt32(result.Buffer, sessionId.Length);
 
-                //         // Ensure the packet is for this client and the expected sequence number
-                //         if (receivedSessionId == sessionId && receivedSequenceNumber == sequenceNumber)
-                //         {
-                //             byte[] packetData = new byte[result.Buffer.Length - (sessionId.Length + 4)];
-                //             Array.Copy(result.Buffer, sessionId.Length + 4, packetData, 0, packetData.Length);
-                //             fileData[sequenceNumber] = packetData;
-                //             receivedPackets[sequenceNumber] = true;
+//         // Ensure the packet is for this client and the expected sequence number
+//         if (receivedSessionId == sessionId && receivedSequenceNumber == sequenceNumber)
+//         {
+//             byte[] packetData = new byte[result.Buffer.Length - (sessionId.Length + 4)];
+//             Array.Copy(result.Buffer, sessionId.Length + 4, packetData, 0, packetData.Length);
+//             fileData[sequenceNumber] = packetData;
+//             receivedPackets[sequenceNumber] = true;
 
-                //             // Send ACK for the received packet
-                //             byte[] ack = new byte[sessionId.Length + 4]; // Session ID + sequence number
-                //             System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(ack, 0); // Add session ID
-                //             BitConverter.GetBytes(sequenceNumber).CopyTo(ack, sessionId.Length); // Add sequence number
-                //             await udpClient.SendAsync(ack, ack.Length, serverEndpoint);
-                //             Console.WriteLine($"Thread {threadId} acknowledged packet {sequenceNumber}.");
+//             // Send ACK for the received packet
+//             byte[] ack = new byte[sessionId.Length + 4]; // Session ID + sequence number
+//             System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(ack, 0); // Add session ID
+//             BitConverter.GetBytes(sequenceNumber).CopyTo(ack, sessionId.Length); // Add sequence number
+//             await udpClient.SendAsync(ack, ack.Length, serverEndpoint);
+//             Console.WriteLine($"Thread {threadId} acknowledged packet {sequenceNumber}.");
 
-                //             packetReceived = true; // Mark packet as successfully received
-                //         }
-                //     }
-                // }
+//             packetReceived = true; // Mark packet as successfully received
+//         }
+//     }
+// }

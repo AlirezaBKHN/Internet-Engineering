@@ -33,6 +33,6 @@ dotnet build
 
 REM Run the client application with server IP, server port, thread count, and file path as arguments
 
-dotnet run -- %1 %2 %3 %4 "E:\git\EE\T1\Q1\RecFiles\a.mp4"
+dotnet run -- %1 %2 %3 %4
 
 pause
