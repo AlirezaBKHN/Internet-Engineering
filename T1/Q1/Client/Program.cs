@@ -9,12 +9,14 @@ class UdpFileClient
     {
         using UdpClient udpClient = new UdpClient();
         IPEndPoint serverEndpoint = new IPEndPoint(IPAddress.Parse(serverIp), serverPort);
+        byte[] requestType = System.Text.Encoding.ASCII.GetBytes("INT");
         byte[] filePathBytes = System.Text.Encoding.ASCII.GetBytes(saveFilePath);
         byte[] threadCountBytes = BitConverter.GetBytes(threadCount);
-        byte[] initialRequest = new byte[filePathBytes.Length + threadCountBytes.Length];
+        byte[] initialRequest = new byte[requestType.Length + filePathBytes.Length + threadCountBytes.Length];
 
-        Buffer.BlockCopy(filePathBytes, 0, initialRequest, 0, filePathBytes.Length);
-        Buffer.BlockCopy(threadCountBytes, 0, initialRequest, filePathBytes.Length, threadCountBytes.Length);
+        Buffer.BlockCopy(requestType, 0, initialRequest, 0, requestType.Length);
+        Buffer.BlockCopy(filePathBytes, 0, initialRequest, 3, filePathBytes.Length);
+        Buffer.BlockCopy(threadCountBytes, 0, initialRequest, filePathBytes.Length + 3, threadCountBytes.Length);
 
         await udpClient.SendAsync(initialRequest, initialRequest.Length, serverEndpoint);
         Console.WriteLine($"Requested file from server {serverIp}:{serverPort}: {saveFilePath} with {threadCount} threads.");
@@ -30,7 +32,7 @@ class UdpFileClient
 
 
         List<byte[]> fileData = new List<byte[]>(new byte[totalPackets][]); // Allocate array for the entire file
-        ConcurrentDictionary<int, bool> receivedPackets = new ConcurrentDictionary<int, bool>();
+        ConcurrentDictionary<int, bool> packets = new ConcurrentDictionary<int, bool>();
         int packetsPerThread = totalPackets / threadCount;
 
         // Multithreading to request file in parallel
@@ -48,24 +50,63 @@ class UdpFileClient
 
                 int startPacket = threadId * packetsPerThread;
                 int endPacket = (threadId == threads.Length - 1) ? totalPackets : startPacket + packetsPerThread;
-                byte[] packetRequest = new byte[sessionId.Length + 4 + 4]; // sessionID + seq init + seq end
-                System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(packetRequest, 0);
-                BitConverter.GetBytes(startPacket).CopyTo(packetRequest, sessionId.Length);
-                BitConverter.GetBytes(endPacket).CopyTo(packetRequest, sessionId.Length + 4);
-                await clients[t].SendAsync(packetRequest);
-                System.Console.WriteLine($"thread {t} requests packets number {startPacket} to {endPacket}");
+                byte[] packetRequest = new byte[3 + sessionId.Length + 4 + 4]; // sessionID + seq init + seq end
+                System.Text.Encoding.ASCII.GetBytes("SEQ").CopyTo(packetRequest, 0);
+                System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(packetRequest, 3);
+                BitConverter.GetBytes(startPacket).CopyTo(packetRequest, sessionId.Length + 3);
+                BitConverter.GetBytes(endPacket).CopyTo(packetRequest, sessionId.Length + 4 + 3);
+                await clients[threadId].SendAsync(packetRequest, packetRequest.Length, serverEndpoint);
+                System.Console.WriteLine($"thread {threadId} requests packets number {startPacket} to {endPacket}");
                 while (true)
                 {
-                    var ReceivedPacket = await clients[t].ReceiveAsync();
-                    if (System.Text.Encoding.ASCII.GetString(ReceivedPacket.Buffer) == "FIN")
+                    var packet = await clients[threadId].ReceiveAsync();
+                    if (System.Text.Encoding.ASCII.GetString(packet.Buffer) == "FIN")
                     {
                         break;
                     }
 
+                    var fileChunk = new byte[packet.Buffer.Length - 4];
+                    var seqNum = BitConverter.ToInt32(packet.Buffer);
+                    Array.Copy(packet.Buffer,4,fileChunk,0,fileChunk.Length) ;
+                    if (seqNum >= startPacket && seqNum < endPacket)
+                    {
+                        // System.Console.WriteLine($"thread {threadId} received {seqNum}");
+                        // System.Console.WriteLine(String.Join(",",fileChunk));
+                        fileData[seqNum] = fileChunk;
+                        packets[seqNum] = true;
+                    }
 
                 }
 
-                //TODO
+                for (int i = startPacket; i < endPacket; i++)
+                {
+
+                    if (!packets[i])
+                    {
+                        var flag = false;
+                        var retryRequestPacket = new byte[3 + sessionId.Length + 4];
+                        System.Text.Encoding.ASCII.GetBytes("RET").CopyTo(packetRequest, 0);
+                        System.Text.Encoding.ASCII.GetBytes(sessionId).CopyTo(packetRequest, 3);
+                        BitConverter.GetBytes(i).CopyTo(retryRequestPacket, sessionId.Length + 3);
+                        while (!flag)
+                        {
+                            await clients[threadId].SendAsync(retryRequestPacket, retryRequestPacket.Length, serverEndpoint);
+                            var retryResult = await clients[threadId].ReceiveAsync();
+                            var fileChunk = new byte[retryResult.Buffer.Length - 4];
+                            var seqNum = BitConverter.ToInt32(retryResult.Buffer);
+                            if (seqNum >= startPacket && seqNum < endPacket)
+                            {
+                                fileData[seqNum] = fileChunk;
+                                packets[seqNum] = true;
+                                flag = true;
+                            }
+                        }
+                    }
+                }
+
+
+
+
             });
         }
 
@@ -81,7 +122,7 @@ class UdpFileClient
             }
         }
 
-        Console.WriteLine("File received and saved.");
+        Console.WriteLine($"File received and saved in {pathToSave}.");
     }
 
     static async Task Main(string[] args)
@@ -97,8 +138,8 @@ class UdpFileClient
         int threadCount = int.Parse(args[2]);
         string saveFilePath = args[3];
         // System.Console.WriteLine("");
-        var guid = new Guid();
-        string pathToSave = $"../ReceivedFiles/{guid.ToString()}.{saveFilePath.Split('.').Last()}";
+        var guid = Guid.NewGuid();
+        string pathToSave = $"../RecFiles/{guid.ToString()}.{saveFilePath.Split('.').Last()}";
         await StartClient(serverIp, serverPort, threadCount, saveFilePath, pathToSave);
     }
 }
@@ -130,7 +171,7 @@ class UdpFileClient
 //             byte[] packetData = new byte[result.Buffer.Length - (sessionId.Length + 4)];
 //             Array.Copy(result.Buffer, sessionId.Length + 4, packetData, 0, packetData.Length);
 //             fileData[sequenceNumber] = packetData;
-//             receivedPackets[sequenceNumber] = true;
+//             packets[sequenceNumber] = true;
 
 //             // Send ACK for the received packet
 //             byte[] ack = new byte[sessionId.Length + 4]; // Session ID + sequence number
