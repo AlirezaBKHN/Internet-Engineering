@@ -2,16 +2,16 @@
 import { useEffect, useRef, useState } from 'react';
 
 export default function Home() {
-  const [messages, setMessages] = useState<string[]| any[]>([]);
+  const [messages, setMessages] = useState<string[] | any[]>([]);
   const [roomId, setRoomId] = useState<string>('');
   const [username, setUsername] = useState<string>('');
   const socket = useRef<WebSocket | null>(null);
   const [currentRoomId, setCurrentRoomId] = useState<string>('');
   const [createRoomId, setCreatetRoomId] = useState<string>('');
-  
+
   useEffect(() => {
     socket.current = new WebSocket('ws://localhost:8000');
-    
+
     socket.current.onopen = () => {
       console.log('WebSocket connection opened');
     };
@@ -20,7 +20,7 @@ export default function Home() {
       const { type, message, roomId } = JSON.parse(event.data);
       if (type === 'message') {
         console.log(message);
-        
+
         setMessages((prev) => [...prev, message]);
       } else if (type === 'roomCreated') {
         setCreatetRoomId(roomId);
@@ -36,10 +36,10 @@ export default function Home() {
     socket.current.onclose = () => {
       console.log('WebSocket connection closed');
     };
-    
+
     return () => socket.current?.close();
   }, []);
-  
+
   const createRoom = () => {
     if (socket.current?.readyState === WebSocket.OPEN) {
       socket.current.send(JSON.stringify({ type: 'create' }));
@@ -47,8 +47,9 @@ export default function Home() {
       console.log('WebSocket is not open');
     }
   };
-  
+
   const joinRoom = () => {
+    leaveRoom()
     if (username && roomId) {
       if (socket.current?.readyState === WebSocket.OPEN) {
         socket.current.send(JSON.stringify({ type: 'join', payload: { roomId, userName: username } }));
@@ -59,7 +60,7 @@ export default function Home() {
       alert('Enter a username and room ID first.');
     }
   };
-  
+
   const sendMessage = (text: string) => {
     if (socket.current?.readyState === WebSocket.OPEN && currentRoomId) {
       socket.current.send(JSON.stringify({ type: 'message', payload: { roomId: currentRoomId, userName: username, text } }));
@@ -67,6 +68,16 @@ export default function Home() {
       console.log('WebSocket is not open or roomId is not set');
     }
   };
+  const leaveRoom = () => {
+    if (socket.current?.readyState === WebSocket.OPEN && currentRoomId) {
+      socket.current.send(JSON.stringify({ type: 'leave', payload: { roomId: currentRoomId, userName: username } }));
+
+      // socket.current.close();
+
+      setMessages([]);
+      setCurrentRoomId('');
+    }
+  }
 
   return (
     <div className="w-screen h-screen flex align-middle justify-center content-center">
@@ -92,7 +103,12 @@ export default function Home() {
         </div>
         <div className="w-full h-full col-span-2 rounded bg-white bg-opacity-35">
           <div className="bg-white bg-opacity-50 h-4/6 mx-5 rounded my-4 flex flex-col gap-2">
-            <h1 className="px-5 py-2">Room Id: {currentRoomId || '###'}</h1>
+            <div className='grid grid-cols-2'>
+              <h1 className="px-5 py-2">Room Id: {currentRoomId || '###'}</h1>
+              <button onClick={leaveRoom} className='rounded-tr bg-red-600 bg-opacity-60 hover:bg-opacity-50'>
+                Leave Room!
+              </button>
+            </div>
             <div className="px-5 pb-2 overflow-y-scroll h-full">
               {messages.map((msg, index) => (
                 <div key={index}>
@@ -104,24 +120,24 @@ export default function Home() {
             </div>
           </div>
           <div className="grid grid-cols-8 gap-3 mx-5 h-14">
-            <input 
+            <input
               onKeyDown={(e) => {
                 if (e.key === 'Enter') {
                   sendMessage((e.target as HTMLInputElement).value);
                   (e.target as HTMLInputElement).value = '';
                 }
-              }} 
-              placeholder="Enter text" 
-              className="rounded col-span-7 p-2 bg-white bg-opacity-45 text-black" 
+              }}
+              placeholder="Enter text"
+              className="rounded col-span-7 p-2 bg-white bg-opacity-45 text-black"
             />
-            <button 
+            <button
               onClick={() => {
                 const input = document.querySelector('input[placeholder="Enter text"]') as HTMLInputElement;
                 if (input) {
                   sendMessage(input.value);
                   input.value = '';
                 }
-              }} 
+              }}
               className="rounded bg-black bg-opacity-30 hover:bg-opacity-40"
             >
               Send

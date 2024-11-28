@@ -33,6 +33,15 @@ server.on('connection', socket => {
             const { roomId, userName, text } = payload;
             broadcast(roomId, {user: userName, message: text});
         }
+        else if (type === 'leave') {
+            const { roomId, userName } = payload;
+            if (roomId && rooms[roomId]) {
+                delete rooms[roomId].users[userName];
+                rooms[roomId].sockets = rooms[roomId].sockets.filter(s => s !== socket);
+                broadcast(roomId, { user: userName, message: 'has left the room.' });
+                // socket.close();
+            }
+        }
     });
 
     socket.on('close', () => {
