@@ -7,8 +7,8 @@ from mininet.log import setLogLevel
 
 setLogLevel('info')
 mptcp = input("mptcp? ")
-delay = int(input("delay="))
-bw = input("bandwidth=")
+delay = input("delay=")
+bw = int(input("bandwidth="))
 os.system(f'sysctl -w net.mptcp.mptcp_enabled={mptcp}')
 net = Mininet(link=TCLink)
 net.addController('c0')
