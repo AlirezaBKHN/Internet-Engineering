@@ -10,18 +10,36 @@ export default function Home() {
   const [createRoomId, setCreatetRoomId] = useState<string>('');
 
   useEffect(() => {
-    socket.current = new WebSocket('ws://localhost:8000');
-
+    socket.current = new WebSocket('ws://localhost:8000'); //JavaScript
+    // socket.current = new WebSocket('ws://localhost:8001'); // GoLang
     socket.current.onopen = () => {
       console.log('WebSocket connection opened');
     };
 
     socket.current.onmessage = (event) => {
-      const { type, message, roomId } = JSON.parse(event.data);
+      // alert(JSON.parse(event.data))
+      const jsonData = JSON.parse(event.data)
+      console.log(jsonData)
+      let type: string, message: string, roomId :string
+      type = jsonData["type"]
+      if ("payload" in jsonData) {
+        roomId = jsonData["payload"]["roomId"]
+        message = jsonData["payload"]["message"]
+      }
+      else {
+        roomId = jsonData["roomId"]
+        message = jsonData["message"]
+      }
       if (type === 'message') {
-        console.log(message);
-
-        setMessages((prev) => [...prev, message]);
+        if (typeof message == 'string') {
+          let username = message.split(" ")[0]
+          let m = message.substring(message.indexOf(" ")+1)
+          setMessages((prev) => [...prev, {user:username,message:m}])
+        }
+        else{
+          setMessages((prev) => [...prev, message]);
+        }
+        console.log(messages)
       } else if (type === 'roomCreated') {
         setCreatetRoomId(roomId);
         console.log(createRoomId);
@@ -49,7 +67,7 @@ export default function Home() {
   };
 
   const joinRoom = () => {
-    leaveRoom()
+    // leaveRoom()
     if (username && roomId) {
       if (socket.current?.readyState === WebSocket.OPEN) {
         socket.current.send(JSON.stringify({ type: 'join', payload: { roomId, userName: username } }));
@@ -72,7 +90,8 @@ export default function Home() {
     if (socket.current?.readyState === WebSocket.OPEN && currentRoomId) {
       socket.current.send(JSON.stringify({ type: 'leave', payload: { roomId: currentRoomId, userName: username } }));
 
-      // socket.current.close();
+      socket.current.close();
+      window.location.reload()
 
       setMessages([]);
       setCurrentRoomId('');

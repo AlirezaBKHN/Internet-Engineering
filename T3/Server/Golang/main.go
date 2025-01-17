@@ -1,102 +1,176 @@
 package main
 
 import (
-    "encoding/json"
-    "log"
-    "net/http"
-    "github.com/gorilla/websocket"
-    "github.com/google/uuid"
+	"encoding/json"
+	"fmt"
+	"log"
+	"net/http"
+	"sync"
+
+	"github.com/google/uuid"
+	"github.com/gorilla/websocket"
 )
+
+type Message struct {
+	Type    string          `json:"type"`
+	Payload json.RawMessage `json:"payload"`
+}
+
+type JoinPayload struct {
+	RoomId   string `json:"roomId"`
+	UserName string `json:"userName"`
+}
+
+type MessagePayload struct {
+	RoomId   string `json:"roomId"`
+	UserName string `json:"userName"`
+	Text     string `json:"text"`
+}
+
+type Room struct {
+	Users   map[string]*websocket.Conn
+	Sockets []*websocket.Conn
+	Mutex   sync.Mutex
+}
 
 var rooms = make(map[string]*Room)
 
-type Room struct {
-    Users   map[string]*websocket.Conn
-    Sockets []*websocket.Conn
+var upgrader = websocket.Upgrader{
+	CheckOrigin: func(r *http.Request) bool {
+		return true
+	},
 }
 
-var upgrader = websocket.Upgrader{
-    ReadBufferSize:  1024,
-    WriteBufferSize: 1024,
-    CheckOrigin: func(r *http.Request) bool {
-        return true
-    },
+func handleConnection(w http.ResponseWriter, r *http.Request) {
+	conn, err := upgrader.Upgrade(w, r, nil)
+	if err != nil {
+		log.Println("Upgrade error:", err)
+		return
+	}
+	defer conn.Close()
+
+	var username, roomId string
+
+	for {
+		var msg Message
+		err := conn.ReadJSON(&msg)
+		if err != nil {
+			log.Println("Read error:", err)
+			break
+		}
+
+		switch msg.Type {
+		case "create":
+			log.Println("Got create request")
+			roomId = uuid.New().String()
+			rooms[roomId] = &Room{
+				Users:   make(map[string]*websocket.Conn),
+				Sockets: []*websocket.Conn{conn},
+			}
+			conn.WriteJSON(Message{Type: "roomCreated", Payload: json.RawMessage(fmt.Sprintf(`{"roomId":"%s"}`, roomId))})
+			log.Printf("Room %s created", roomId)
+
+		case "join":
+			var joinPayload JoinPayload
+			err := json.Unmarshal(msg.Payload, &joinPayload)
+			if err != nil {
+				log.Println("Error parsing join payload:", err)
+				break
+			}
+			roomId = joinPayload.RoomId
+			username = joinPayload.UserName
+			if room, ok := rooms[roomId]; ok && room.Users[username] == nil {
+				room.Mutex.Lock()
+				room.Users[username] = conn
+				room.Sockets = append(room.Sockets, conn)
+				room.Mutex.Unlock()
+				conn.WriteJSON(Message{
+					Type:    "joined",
+					Payload: json.RawMessage(fmt.Sprintf(`{"roomId":"%s"}`, roomId)),
+				})
+				broadcast(roomId, fmt.Sprintf("%s has joined the room.", username))
+			} else {
+				conn.WriteJSON(Message{Type: "error", Payload: json.RawMessage(`{"message":"Can't join the room."}`)})
+			}
+
+		case "message":
+			var messagePayload MessagePayload
+			err := json.Unmarshal(msg.Payload, &messagePayload)
+			if err != nil {
+				log.Println("Error parsing message payload:", err)
+				break
+			}
+			broadcast(messagePayload.RoomId, fmt.Sprintf("%s: %s", messagePayload.UserName, messagePayload.Text))
+
+		case "leave":
+			var leavePayload JoinPayload
+			err := json.Unmarshal(msg.Payload, &leavePayload)
+			if err != nil {
+				log.Println("Error parsing leave payload:", err)
+				break
+			}
+			roomId = leavePayload.RoomId
+			username = leavePayload.UserName
+			if room, ok := rooms[roomId]; ok {
+				room.Mutex.Lock()
+				delete(room.Users, username)
+				var updatedSockets []*websocket.Conn
+				for _, socket := range room.Sockets {
+					if socket != conn {
+						updatedSockets = append(updatedSockets, socket)
+					}
+				}
+				room.Sockets = updatedSockets
+				room.Mutex.Unlock()
+				broadcast(roomId, fmt.Sprintf("%s has left the room.", username))
+			}
+
+		default:
+			log.Println("Unknown message type:", msg.Type)
+		}
+	}
+
+	if roomId != "" {
+		if room, ok := rooms[roomId]; ok {
+			room.Mutex.Lock()
+			delete(room.Users, username)
+			var updatedSockets []*websocket.Conn
+			for _, socket := range room.Sockets {
+				if socket != conn {
+					updatedSockets = append(updatedSockets, socket)
+				}
+			}
+			room.Sockets = updatedSockets
+			room.Mutex.Unlock()
+
+			if len(room.Sockets) == 0 {
+				delete(rooms, roomId)
+			} else {
+				broadcast(roomId, fmt.Sprintf("%s has left the room.", username))
+			}
+		}
+	}
+}
+
+func broadcast(roomId, message string) {
+	if room, ok := rooms[roomId]; ok {
+		room.Mutex.Lock()
+		for _, conn := range room.Sockets {
+			if err := conn.WriteJSON(Message{Type: "message", Payload: json.RawMessage(fmt.Sprintf(`{"message":"%s"}`, message))}); err != nil {
+				log.Println("Error sending message:", err)
+			}
+		}
+		room.Mutex.Unlock()
+	}
 }
 
 func main() {
-    http.HandleFunc("/ws", handleConnections)
-    log.Println("WebSocket server is running on ws://localhost:8001")
-    log.Fatal(http.ListenAndServe(":8001", nil))
-}
+	http.HandleFunc("/", handleConnection)
 
-func handleConnections(w http.ResponseWriter, r *http.Request) {
-    ws, err := upgrader.Upgrade(w, r, nil)
-    if err != nil {
-        log.Fatal(err)
-    }
-    defer ws.Close()
-
-    for {
-        _, message, err := ws.ReadMessage()
-        if err != nil {
-            log.Printf("error: %v", err)
-            break
-        }
-
-        var msg map[string]interface{}
-        if err := json.Unmarshal(message, &msg); err != nil {
-            log.Printf("error: %v", err)
-            continue
-        }
-
-        switch msg["type"] {
-        case "create":
-            handleCreateRoom(ws)
-        case "join":
-            handleJoinRoom(ws, msg["payload"].(map[string]interface{}))
-        case "message":
-            handleMessage(ws, msg["payload"].(map[string]interface{}))
-        }
-    }
-}
-
-func handleCreateRoom(ws *websocket.Conn) {
-    roomId := uuid.New().String()
-    rooms[roomId] = &Room{Users: make(map[string]*websocket.Conn), Sockets: []*websocket.Conn{ws}}
-    response := map[string]interface{}{"type": "roomCreated", "roomId": roomId}
-    ws.WriteJSON(response)
-}
-
-func handleJoinRoom(ws *websocket.Conn, payload map[string]interface{}) {
-    roomId := payload["roomId"].(string)
-    userName := payload["userName"].(string)
-
-    if room, exists := rooms[roomId]; exists && room.Users[userName] == nil {
-        room.Users[userName] = ws
-        room.Sockets = append(room.Sockets, ws)
-        ws.WriteJSON(map[string]interface{}{"type": "joined", "roomId": roomId})
-        broadcast(roomId, map[string]interface{}{"user": userName, "message": "has joined the room."})
-    } else {
-        ws.WriteJSON(map[string]interface{}{"type": "error", "message": "Can't join the room."})
-    }
-}
-
-func handleMessage(ws *websocket.Conn, payload map[string]interface{}) {
-    roomId := payload["roomId"].(string)
-    userName := payload["userName"].(string)
-    text := payload["text"].(string)
-    broadcast(roomId, map[string]interface{}{"user": userName, "message": text})
-}
-
-func broadcast(roomId string, message map[string]interface{}) {
-    room, exists := rooms[roomId]
-    if !exists {
-        return
-    }
-
-    for _, client := range room.Sockets {
-        if err := client.WriteJSON(map[string]interface{}{"type": "message", "message": message}); err != nil {
-            log.Printf("error: %v", err)
-        }
-    }
+	serverAddr := "localhost:8001"
+	fmt.Println("WebSocket server is running on ws://" + serverAddr)
+	err := http.ListenAndServe(serverAddr, nil)
+	if err != nil {
+		log.Fatal("ListenAndServe error:", err)
+	}
 }

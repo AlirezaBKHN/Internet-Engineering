@@ -1,7 +1,18 @@
-const WebSocket = require('ws'); // Ensure you import WebSocket correctly
+const WebSocket = require('ws');
 const { v4: uuidv4 } = require('uuid');
 
-const server = new WebSocket.Server({ port: 8000 });
+const server = new WebSocket.Server({ 
+    port: 8000, 
+    perMessageDeflate: { 
+        zlibDeflateOptions: { chunkSize: 1024, memLevel: 7, level: 3 }, 
+        zlibInflateOptions: { chunkSize: 10 * 1024 }, 
+        clientNoContextTakeover: true,
+        serverNoContextTakeover: true, 
+        serverMaxWindowBits: 10 
+        }
+    }
+)
+
 const rooms = {};
 
 server.on('connection', socket => {
@@ -10,7 +21,7 @@ server.on('connection', socket => {
         if (type === 'create') {
             console.log("Got create request");
             const roomId = uuidv4();
-            rooms[roomId] = { users: {}, sockets: [] }; // Ensure users is an object
+            rooms[roomId] = { users: {}, sockets: [] };
             socket.send(JSON.stringify({ type: "roomCreated", roomId: roomId }));
         }
         else if (type === 'join') {
@@ -39,10 +50,9 @@ server.on('connection', socket => {
                 delete rooms[roomId].users[userName];
                 rooms[roomId].sockets = rooms[roomId].sockets.filter(s => s !== socket);
                 broadcast(roomId, { user: userName, message: 'has left the room.' });
-                // socket.close();
             }
         }
-    });
+    }); 
 
     socket.on('close', () => {
         const { roomId, username } = socket;
